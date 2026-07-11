@@ -63,9 +63,45 @@ body {
   100% { transform: translate(0, 0) scale(1); }
 }
 
+/* Animated rotating-gradient border card, used for the hero headline. */
+.hero-card {
+  position: relative;
+  border-radius: 28px;
+  padding: 2px;
+  overflow: hidden;
+  isolation: isolate;
+}
+.hero-card-spin {
+  position: absolute;
+  inset: -60%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    var(--color-brand) 55deg,
+    var(--color-brand-light) 110deg,
+    var(--color-accent-2) 150deg,
+    transparent 210deg,
+    transparent 360deg
+  );
+  animation: hero-spin 9s linear infinite;
+  z-index: 0;
+}
+@keyframes hero-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.hero-card-content {
+  position: relative;
+  z-index: 1;
+  border-radius: 26px;
+  background: #0a0a0f;
+  overflow: hidden;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-fairwind-pulse,
-  .fairwind-blob {
+  .fairwind-blob,
+  .hero-card-spin {
     animation: none !important;
   }
 }

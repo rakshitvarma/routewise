@@ -66,13 +66,25 @@ export function Playground({
         </button>
       </div>
 
+      {loading && (
+        <div className="mt-5 flex items-center gap-4 rounded-xl border border-[#0A4DBB]/30 bg-gradient-to-b from-neutral-900 to-neutral-950 p-6">
+          <FairwindLogo size={36} className="animate-fairwind-pulse shrink-0" />
+          <div>
+            <div className="text-sm font-semibold text-white">Routing your task…</div>
+            <div className="text-sm text-neutral-500">
+              Classifying, then answering locally or via Fireworks - whichever is cheapest.
+            </div>
+          </div>
+        </div>
+      )}
+
       {error && (
         <div className="mt-4 rounded-lg border border-red-900/50 bg-red-950/30 p-3 text-sm text-red-300">
           {error}
         </div>
       )}
 
-      {result && (
+      {!loading && result && (
         <div className="mt-5 rounded-xl border border-neutral-800 bg-gradient-to-b from-neutral-900 to-neutral-950 p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <CategoryPill category={result.category} />

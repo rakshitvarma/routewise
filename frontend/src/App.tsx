@@ -34,22 +34,26 @@ function App() {
       </nav>
 
       <div className="relative overflow-hidden">
-        <AnimatedBackdrop className="-top-24 h-[560px]" />
-
         <main className="relative mx-auto max-w-5xl px-6 pb-24 pt-14">
-          <div className="mb-10 text-center">
-            <h1 className="text-4xl font-bold tracking-tight text-white sm:text-5xl">
-              Route every task to the{" "}
-              <span className="bg-gradient-to-r from-[#3B7BFF] via-[#5CC8FC] to-[#3B7BFF] bg-clip-text text-transparent">
-                cheapest model
-              </span>{" "}
-              that can answer it
-            </h1>
-            <p className="mx-auto mt-4 max-w-2xl text-[15px] leading-relaxed text-neutral-400">
-              A hybrid routing agent that classifies each task for free, answers it locally when a
-              small bundled model can be trusted, and only spends Fireworks tokens on what genuinely
-              needs it. Built for AMD Developer Hackathon Act II, Track 1.
-            </p>
+          <div className="hero-card mb-10">
+            <div className="hero-card-spin" />
+            <div className="hero-card-content px-6 py-14 text-center sm:px-12">
+              <AnimatedBackdrop className="h-full" />
+              <div className="relative">
+                <h1 className="text-4xl font-bold tracking-tight text-white sm:text-5xl">
+                  Route every task to the{" "}
+                  <span className="bg-gradient-to-r from-[#3B7BFF] via-[#5CC8FC] to-[#3B7BFF] bg-clip-text text-transparent">
+                    cheapest model
+                  </span>{" "}
+                  that can answer it
+                </h1>
+                <p className="mx-auto mt-4 max-w-2xl text-[15px] leading-relaxed text-neutral-400">
+                  A hybrid routing agent that classifies each task for free, answers it locally when a
+                  small bundled model can be trusted, and only spends Fireworks tokens on what
+                  genuinely needs it. Built for AMD Developer Hackathon Act II, Track 1.
+                </p>
+              </div>
+            </div>
           </div>
 
           <div className="mb-8">

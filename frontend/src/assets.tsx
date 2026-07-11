@@ -7,17 +7,17 @@
 // Brand mark: folded-ribbon "F" + accent dot, per the Fairwind brand sheet
 // (dark-mode primary: white mark, #0A4DBB dot).
 export const FairwindLogo = ({ size = 36, className = "" }: { size?: number; className?: string }) => (
-  <svg width={size} height={size} viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" className={className}>
+  <svg width={size} height={size} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" className={className}>
     <path
-      d="M14 6 H34 Q37 6 35 8.6 L21 26 Q19.4 28 16.8 28 H12 Q9 28 9 25 V11 Q9 7.5 12 6.6 Z"
+      d="M30 8 L62 8 Q68 8 65 13 L42 44 Q39 48 34 48 L26 48 Q20 48 20 42 L20 19 Q20 12 27 9 Q28.5 8.3 30 8 Z"
       fill="#FFFFFF"
     />
     <path
-      d="M12 20 H26 Q29 20 27 22.6 L17.5 34.4 Q15.8 36.5 13.1 36.5 H10 Q7 36.5 7 33.5 V25 Q7 21.5 10 20.4 Z"
+      d="M28 52 L52 52 Q58 52 55 57 L35 78 Q32 82 27.5 82 L23 82 Q17 82 17 76 L17 57 Q17 51 23 49 Q25.5 49.5 28 52 Z"
       fill="#FFFFFF"
       opacity="0.92"
     />
-    <circle cx="32" cy="34" r="6" fill="#0A4DBB" />
+    <circle cx="54" cy="72" r="13" fill="#0A4DBB" />
   </svg>
 );
 
