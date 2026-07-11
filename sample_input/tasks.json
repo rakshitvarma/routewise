@@ -1,0 +1,11 @@
+[
+  { "task_id": "t1", "prompt": "What is 128 * 37 - 45?" },
+  { "task_id": "t2", "prompt": "A shirt costs $80 and is discounted by 25%. What is the final price?" },
+  { "task_id": "t3", "prompt": "What is photosynthesis and why is it important for plants?" },
+  { "task_id": "t4", "prompt": "Classify the sentiment of this review and justify it: 'The battery life is terrible and it overheats constantly.'" },
+  { "task_id": "t5", "prompt": "Summarise the following text in one sentence: The quarterly report showed revenue grew 12% year over year, driven mainly by strong demand in the APAC region, while costs rose only 4%, leading to improved margins across all business units." },
+  { "task_id": "t6", "prompt": "Extract all named entities (person, organization, location, date) from: 'Tim Cook announced on March 3rd that Apple would open a new campus in Austin, Texas.'" },
+  { "task_id": "t7", "prompt": "This code has a bug, find and fix it: ```def add(a, b):\\n    return a - b```" },
+  { "task_id": "t8", "prompt": "Write a Python function that returns the nth Fibonacci number." },
+  { "task_id": "t9", "prompt": "Three friends, Amy, Ben, and Cara, each like exactly one of red, blue, or green. Amy does not like red. Ben likes blue. Who likes red, and who likes green?" }
+]

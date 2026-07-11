@@ -1,0 +1,94 @@
+"""Track 1 entrypoint.
+
+Reads /input/tasks.json, routes each task through:
+  1. local zero-token classifier
+  2. local zero-token deterministic solvers (math only, conservative)
+  3. batched Fireworks calls per category for everything else
+Writes /output/results.json. Always exits 0 with valid JSON, even in
+degraded form, since malformed output or a crash scores zero.
+"""
+import json
+import os
+import sys
+import time
+from collections import defaultdict
+
+from router.classifier import classify
+from router.solvers import try_solve_math
+from router.fireworks_client import FireworksClient
+
+INPUT_PATH = os.environ.get("TASKS_INPUT_PATH", "/input/tasks.json")
+OUTPUT_PATH = os.environ.get("TASKS_OUTPUT_PATH", "/output/results.json")
+
+
+def load_tasks(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def write_results(path, results):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+
+
+def main():
+    started = time.time()
+    tasks = load_tasks(INPUT_PATH)
+
+    answers = {}
+    buckets = defaultdict(list)  # category -> [(task_id, prompt)]
+
+    for task in tasks:
+        task_id = task["task_id"]
+        prompt = task["prompt"]
+        category = classify(prompt)
+
+        if category == "math":
+            local_answer = try_solve_math(prompt)
+            if local_answer is not None:
+                answers[task_id] = local_answer
+                continue
+
+        buckets[category].append((task_id, prompt))
+
+    if any(buckets.values()):
+        client = FireworksClient()
+        for category, items in buckets.items():
+            if not items:
+                continue
+            try:
+                batch_answers = client.answer_batch(category, items)
+            except Exception:
+                try:
+                    batch_answers = client.answer_batch(category, items)  # one retry
+                except Exception as exc:
+                    print(f"[warn] category={category} failed twice: {exc}", file=sys.stderr)
+                    batch_answers = {tid: "" for tid, _ in items}
+            for task_id, _ in items:
+                answers[task_id] = batch_answers.get(task_id, "")
+        print(
+            f"[stats] fireworks_calls={client.total_calls} "
+            f"total_tokens={client.total_tokens}",
+            file=sys.stderr,
+        )
+
+    results = [{"task_id": tid, "answer": answers.get(tid, "")} for tid in
+               [t["task_id"] for t in tasks]]
+    write_results(OUTPUT_PATH, results)
+    print(f"[done] {len(results)} tasks in {time.time() - started:.1f}s", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        print(f"[fatal] {exc}", file=sys.stderr)
+        # Still try to produce a valid (empty-ish) output so we don't
+        # hard-fail the whole submission if input parsing blew up.
+        try:
+            tasks = load_tasks(INPUT_PATH)
+            write_results(OUTPUT_PATH, [{"task_id": t["task_id"], "answer": ""} for t in tasks])
+        except Exception:
+            write_results(OUTPUT_PATH, [])
+        sys.exit(1)
