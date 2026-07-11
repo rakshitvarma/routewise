@@ -206,6 +206,13 @@ with st.sidebar:
         "5. **Everything else** is merged by model into as few Fireworks "
         "calls as possible (not one call per category)."
     )
+    if not local_llm.available("sentiment"):
+        st.caption(
+            "⚠️ This hosted instance couldn't load the local models (Streamlit "
+            "Community Cloud's build environment), so every query here calls "
+            "Fireworks live. The Docker image being submitted is unaffected — "
+            "verified separately to run both local models successfully."
+        )
     st.divider()
     st.markdown("**Fireworks models — used when local can't answer**", help="Only the models actually reachable via ALLOWED_MODELS are used.")
     for hint, name, icon_svg, bg in MODEL_BADGES:
