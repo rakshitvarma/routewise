@@ -1,0 +1,19 @@
+[
+  { "task_id": "d1", "prompt": "45 + 78 * 2" },
+  { "task_id": "d2", "prompt": "A store marks up a $40 item by 30% and then offers a 10% discount on the marked-up price. What is the final price?" },
+  { "task_id": "d3", "prompt": "If a train travels 60 miles in 45 minutes, what is its speed in miles per hour?" },
+  { "task_id": "d4", "prompt": "Explain what a black hole is in simple terms." },
+  { "task_id": "d5", "prompt": "How does a vaccine train the immune system?" },
+  { "task_id": "d6", "prompt": "Classify the sentiment: 'The food was okay, nothing special, but the service was excellent.'" },
+  { "task_id": "d7", "prompt": "Classify the sentiment and explain: 'I can't believe how amazing this concert was, best night of my life!'" },
+  { "task_id": "d8", "prompt": "Summarise this in exactly 2 sentences: The city council voted 7-2 on Tuesday to approve funding for a new public transit line connecting the northern suburbs to downtown. Proponents argued the line would reduce traffic congestion and cut commute times by up to 20 minutes, while opponents raised concerns about the $340 million price tag and construction disruption over the next three years. Construction is expected to begin in early 2027." },
+  { "task_id": "d9", "prompt": "Summarise the following in one short sentence: Researchers at a university found that participants who slept less than six hours a night for a week showed measurably slower reaction times and reduced short-term memory recall compared to a control group that slept eight hours." },
+  { "task_id": "d10", "prompt": "Extract all named entities from: 'Marie Curie won the Nobel Prize in Physics in 1903 while working in Paris.'" },
+  { "task_id": "d11", "prompt": "List the people, organizations, and locations mentioned: 'Elon Musk founded SpaceX in Hawthorne, California in 2002, and later became CEO of Tesla.'" },
+  { "task_id": "d12", "prompt": "Find and fix the bug: ```def is_even(n):\\n    return n % 2 == 1```" },
+  { "task_id": "d13", "prompt": "This function should return the maximum value in a list but has a bug: ```def find_max(nums):\\n    max_val = 0\\n    for n in nums:\\n        if n > max_val:\\n            max_val = n\\n    return max_val```. It fails for lists of all-negative numbers, fix it." },
+  { "task_id": "d14", "prompt": "Write a Python function is_palindrome(s) that returns True if a string reads the same forwards and backwards, ignoring case and spaces." },
+  { "task_id": "d15", "prompt": "Write a function that takes a list of integers and returns a new list with duplicates removed, preserving order." },
+  { "task_id": "d16", "prompt": "Four coworkers - Dev, Priya, Sam, and Lee - sit in a row of four desks. Dev is not at either end. Priya sits immediately to the left of Sam. Lee sits at the leftmost desk. Who sits at the rightmost desk?" },
+  { "task_id": "d17", "prompt": "Three boxes are labeled 'Apples', 'Oranges', and 'Mixed', but all labels are wrong. You may pick one fruit from one box to determine the correct labels. Which box should you pick from, and why?" }
+]
