@@ -64,7 +64,30 @@ def try_solve_math(prompt: str) -> Optional[str]:
     return str(result)
 
 
-# Code debugging / generation deliberately have no local deterministic path:
-# verifying arbitrary submitted code needs sandboxed execution and inferred
-# test cases, which is high-effort and unreliable to build correctly under
-# time pressure. Both categories are always routed to the Fireworks batch.
+# Code debugging / generation deliberately have no local deterministic
+# *answering* path: verifying arbitrary submitted code needs sandboxed
+# execution and inferred test cases, which is high-effort and unreliable to
+# build correctly under time pressure. Both categories are always routed to
+# the Fireworks batch. We do, however, cheaply verify the syntax of what
+# comes back (zero tokens) so an obviously broken answer can trigger one
+# corrective call instead of silently failing the accuracy gate.
+
+_PY_HINT_RE = re.compile(r"\bdef \w+\(|\bpython\b|\breturn\b", re.I)
+_OTHER_LANG_RE = re.compile(
+    r"\bpublic (class|static)\b|#include|\bfunction\s*\w*\s*\(|\bconsole\.log\b|"
+    r"\bSystem\.out\b|\bvar \w+\s*=|\blet \w+\s*=", re.I
+)
+
+
+def looks_like_python(text: str) -> bool:
+    return bool(_PY_HINT_RE.search(text)) and not _OTHER_LANG_RE.search(text)
+
+
+def python_syntax_error(code: str) -> Optional[str]:
+    """Return None if `code` parses as valid Python, else the error message."""
+    stripped = re.sub(r"^```(python)?\s*|\s*```$", "", code.strip(), flags=re.I)
+    try:
+        ast.parse(stripped)
+        return None
+    except SyntaxError as exc:
+        return str(exc)

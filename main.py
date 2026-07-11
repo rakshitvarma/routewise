@@ -14,7 +14,7 @@ import time
 from collections import defaultdict
 
 from router.classifier import classify
-from router.solvers import try_solve_math
+from router.solvers import try_solve_math, looks_like_python, python_syntax_error
 from router.fireworks_client import FireworksClient
 
 INPUT_PATH = os.environ.get("TASKS_INPUT_PATH", "/input/tasks.json")
@@ -65,8 +65,16 @@ def main():
                 except Exception as exc:
                     print(f"[warn] category={category} failed twice: {exc}", file=sys.stderr)
                     batch_answers = {tid: "" for tid, _ in items}
-            for task_id, _ in items:
-                answers[task_id] = batch_answers.get(task_id, "")
+            for task_id, prompt in items:
+                answer = batch_answers.get(task_id, "")
+                if category in ("code_debug", "code_gen") and looks_like_python(answer):
+                    err = python_syntax_error(answer)
+                    if err:
+                        try:
+                            answer = client.fix_code(category, prompt, answer, err)
+                        except Exception as exc:
+                            print(f"[warn] fix_code failed for {task_id}: {exc}", file=sys.stderr)
+                answers[task_id] = answer
         print(
             f"[stats] fireworks_calls={client.total_calls} "
             f"total_tokens={client.total_tokens}",

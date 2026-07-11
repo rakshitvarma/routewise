@@ -89,11 +89,62 @@ class FireworksClient:
         return non_gemma[0] if non_gemma else self.allowed_models[0]
 
     def _build_user_prompt(self, items: List[Tuple[str, str]]) -> str:
-        lines = ["Answer every task below. Return ONLY a JSON array like "
-                 '[{"task_id": "...", "answer": "..."}], one entry per task_id, no other text.', ""]
+        # json_object response_format requires an OBJECT at the root, not an
+        # array. Earlier version used a generic '{"task_id": "answer"}'
+        # example in the instruction text, and the model pattern-matched the
+        # literal placeholder word "task_id" as the key instead of
+        # substituting the real id - spelling out the *actual* required keys
+        # avoids that ambiguity entirely.
+        ids = ", ".join(f'"{tid}"' for tid, _ in items)
+        lines = [f"Return ONLY a JSON object with exactly these keys: {ids}. "
+                 "Each key's value is your answer to that task. No other text.", ""]
         for task_id, prompt in items:
-            lines.append(f'task_id={task_id}: {prompt}')
+            lines.append(f'"{task_id}": {prompt}')
         return "\n".join(lines)
+
+    def _complete(self, model: str, system: str, user: str, max_tokens: int,
+                   json_mode: bool = True) -> str:
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0,
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        # reasoning_effort="none" combined with json_object response_format
+        # causes MiniMax-M3 to degenerate into repeating its own output until
+        # max_tokens is hit (verified empirically) - only safe to suppress
+        # reasoning on the plain-text (non-JSON) path.
+        if not json_mode and any(h in model.lower() for h in _REASONING_CAPABLE_HINTS):
+            payload["reasoning_effort"] = "none"
+
+        def _post():
+            return requests.post(
+                f"{self.base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=60,
+            )
+
+        resp = _post()
+        if resp.status_code == 400:
+            # Some models may reject response_format/reasoning_effort params
+            # outright - retry once with only the bare essentials before
+            # giving up (cheaper than losing the whole category to a 400).
+            payload.pop("response_format", None)
+            payload.pop("reasoning_effort", None)
+            resp = _post()
+        resp.raise_for_status()
+        data = resp.json()
+
+        usage = data.get("usage", {})
+        self.total_tokens += usage.get("total_tokens", 0)
+        self.total_calls += 1
+        return data["choices"][0]["message"]["content"]
 
     def answer_batch(self, category: str, items: List[Tuple[str, str]]) -> Dict[str, str]:
         """items: list of (task_id, prompt). Returns {task_id: answer}."""
@@ -101,41 +152,57 @@ class FireworksClient:
             return {}
 
         model = self.pick_model(category)
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPTS[category]},
-                {"role": "user", "content": self._build_user_prompt(items)},
-            ],
-            "max_tokens": _MAX_TOKENS[category] * max(1, len(items)),
-            "temperature": 0,
-        }
-        if any(h in model.lower() for h in _REASONING_CAPABLE_HINTS):
-            payload["reasoning_effort"] = "none"
 
-        resp = requests.post(
-            f"{self.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=60,
+        if len(items) == 1:
+            # No JSON wrapper needed (and no ambiguous placeholder key to
+            # confuse the model with) when there's only one task to answer.
+            task_id, prompt = items[0]
+            content = self._complete(
+                model, _SYSTEM_PROMPTS[category], prompt,
+                _MAX_TOKENS[category], json_mode=False,
+            )
+            return {task_id: content.strip()}
+
+        content = self._complete(
+            model,
+            _SYSTEM_PROMPTS[category],
+            self._build_user_prompt(items),
+            _MAX_TOKENS[category] * len(items) + 20 * len(items),
         )
-        resp.raise_for_status()
-        data = resp.json()
+        result = self._parse_answers(content, [tid for tid, _ in items])
 
-        usage = data.get("usage", {})
-        self.total_tokens += usage.get("total_tokens", 0)
-        self.total_calls += 1
+        # Defense in depth: a degenerate/repeating response (or a parse
+        # failure) shows up as every task_id mapping to the same long blob.
+        # Rather than submit that same wrong answer for every task in the
+        # batch, fall back to answering each one individually - costs more
+        # tokens but guarantees distinct, correct-shaped answers.
+        distinct_values = {v for v in result.values()}
+        if len(items) > 1 and len(distinct_values) == 1 and len(next(iter(distinct_values))) > 200:
+            return {tid: self.answer_batch(category, [(tid, p)])[tid] for tid, p in items}
+        return result
 
-        content = data["choices"][0]["message"]["content"]
-        return self._parse_answers(content, [tid for tid, _ in items])
+    def fix_code(self, category: str, prompt: str, broken_answer: str, error: str) -> str:
+        """One corrective call for a single task whose code failed to parse."""
+        model = self.pick_model(category)
+        system = _SYSTEM_PROMPTS[category] + " Return ONLY the corrected code, no JSON, no markdown fences."
+        user = (
+            f"Original task: {prompt}\n\nYour previous answer had a Python syntax "
+            f"error ({error}):\n{broken_answer}\n\nReturn the corrected, syntactically "
+            f"valid code."
+        )
+        return self._complete(model, system, user, _MAX_TOKENS[category], json_mode=False)
 
     @staticmethod
     def _parse_answers(content: str, expected_ids: List[str]) -> Dict[str, str]:
-        match = re.search(r"\[.*\]", content, re.S)
+        match = re.search(r"\{.*\}", content, re.S)
         raw = match.group(0) if match else content
         try:
             parsed = json.loads(raw)
-            return {str(item["task_id"]): str(item["answer"]) for item in parsed}
+            if isinstance(parsed, dict):
+                return {str(k): str(v) for k, v in parsed.items()}
+            if isinstance(parsed, list):  # tolerate the old array shape too
+                return {str(item["task_id"]): str(item["answer"]) for item in parsed}
+            raise ValueError("unexpected JSON shape")
         except Exception:
             # Degrade gracefully: don't crash the whole run over one bad batch.
             return {tid: content.strip() for tid in expected_ids}
