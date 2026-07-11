@@ -21,10 +21,19 @@ export function Playground({
     if (!prompt.trim() || loading) return;
     setLoading(true);
     setError(null);
+    const startedAt = performance.now();
     try {
       const res = await routeTask(prompt);
-      setResult(res);
-      onResult({ ...res, prompt, id: Date.now() });
+      // The server's own `elapsed` only times the model call inside the
+      // request handler - it misses Cloud Run cold starts (a fresh
+      // instance reloading both local models before it can even accept
+      // the request) and network round-trip. Round-trip time as measured
+      // here is what the user actually waited for, so display that
+      // instead of the server-internal figure.
+      const roundTrip = Math.round((performance.now() - startedAt) / 10) / 100;
+      const withRealElapsed = { ...res, elapsed: roundTrip };
+      setResult(withRealElapsed);
+      onResult({ ...withRealElapsed, prompt, id: Date.now() });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Request failed");
     } finally {
