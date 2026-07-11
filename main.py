@@ -59,6 +59,7 @@ def main():
             local_answer = try_solve_math(prompt)
             if local_answer is not None:
                 answers[task_id] = local_answer
+                print(f"[timing] t={time.time()-started:.1f}s {task_id} ({category}) solved deterministically", file=sys.stderr)
                 continue
             # Word problems deliberately stay on Fireworks, not
             # local_llm.try_solve_math_word_problem(): that path exists and
@@ -72,21 +73,27 @@ def main():
             # ad hoc samples when a wrong answer risks the accuracy gate.
 
         if category in LOCAL_LLM_CATEGORIES:
+            local_started = time.time()
             local_answer = local_llm.answer(category, prompt)
+            local_elapsed = time.time() - local_started
             if local_answer is not None:
                 if category in ("code_debug", "code_gen") and looks_like_python(local_answer):
                     # Extra gate beyond local_llm's own sanity check: only
                     # trust local code output that's actually valid syntax.
                     if python_syntax_error(local_answer) is None:
                         answers[task_id] = local_answer
+                        print(f"[timing] t={time.time()-started:.1f}s {task_id} ({category}) local in {local_elapsed:.1f}s", file=sys.stderr)
                         continue
                 else:
                     answers[task_id] = local_answer
+                    print(f"[timing] t={time.time()-started:.1f}s {task_id} ({category}) local in {local_elapsed:.1f}s", file=sys.stderr)
                     continue
+            print(f"[timing] t={time.time()-started:.1f}s {task_id} ({category}) local rejected/failed in {local_elapsed:.1f}s, falling to Fireworks", file=sys.stderr)
 
         buckets[category].append((task_id, prompt))
 
     if any(buckets.values()):
+        print(f"[timing] t={time.time()-started:.1f}s starting Fireworks phase, buckets={ {k: len(v) for k, v in buckets.items()} }", file=sys.stderr)
         client = FireworksClient()
         try:
             merged_answers = client.answer_all(buckets)
@@ -96,6 +103,7 @@ def main():
             except Exception as exc:
                 print(f"[warn] answer_all failed twice: {exc}", file=sys.stderr)
                 merged_answers = {}
+        print(f"[timing] t={time.time()-started:.1f}s Fireworks phase (answer_all) done", file=sys.stderr)
 
         category_by_task = {tid: cat for cat, items in buckets.items() for tid, _ in items}
         prompt_by_task = {tid: p for items in buckets.values() for tid, p in items}

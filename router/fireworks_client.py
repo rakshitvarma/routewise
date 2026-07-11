@@ -138,7 +138,13 @@ class FireworksClient:
                 f"{self.base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
                 json=payload,
-                timeout=60,
+                # The submission guide caps response time per request at 30s.
+                # A 60s client timeout meant we'd sit waiting past the point
+                # the judging proxy had likely already given up - fail fast
+                # instead so a slow call surfaces as an exception (caught by
+                # answer_all's retry/fallback) rather than a long, pointless
+                # wait on a connection the proxy may have already dropped.
+                timeout=25,
             )
 
         resp = _post()
