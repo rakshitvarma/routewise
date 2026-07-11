@@ -14,9 +14,10 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from router.classifier import classify
-from router.solvers import try_solve_math
+from router.solvers import try_solve_math, looks_like_python, python_syntax_error
 from router.fireworks_client import FireworksClient
-from assets import ROUTEWISE_LOGO_SVG, MODEL_BADGES
+from router import local_llm
+from assets import ROUTEWISE_LOGO_SVG, MODEL_BADGES, LOCAL_MODELS, _mini_svg, _QWEN_PATH
 
 _FAVICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "favicon.png")
 st.set_page_config(page_title="RouteWise", page_icon=_FAVICON, layout="centered")
@@ -26,6 +27,17 @@ st.set_page_config(page_title="RouteWise", page_icon=_FAVICON, layout="centered"
 for key in ("FIREWORKS_API_KEY", "FIREWORKS_BASE_URL", "ALLOWED_MODELS"):
     if key not in os.environ and key in st.secrets:
         os.environ[key] = st.secrets[key]
+
+LOCAL_LLM_CATEGORIES = {"sentiment", "ner", "factual", "summarization", "code_debug", "code_gen"}
+
+
+@st.cache_resource(show_spinner="Downloading & loading local models (one-time, ~2GB)...")
+def _preload_local_models():
+    local_llm.preload()
+    return True
+
+
+_preload_local_models()
 
 # ---------------------------------------------------------------------------
 # Visual metadata: category icon/color, and per-model "badge" (a small
@@ -184,27 +196,38 @@ with st.sidebar:
         "of 8 categories.\n"
         "2. **Deterministic math solver** answers bare arithmetic instantly "
         "for free — word problems fall through to Fireworks.\n"
-        "3. **Two bundled local models** (in the submitted Docker image) "
-        "answer factual/sentiment/NER/summarisation and code_debug/code_gen "
-        "for free, sanity- and syntax-checked before being trusted.\n"
+        "3. **Two bundled local models** answer factual/sentiment/NER/"
+        "summarisation and code_debug/code_gen for free (sanity- and "
+        "syntax-checked before being trusted) — this demo runs the same "
+        "models the submitted Docker image runs, so a local answer here "
+        "shows 0 tokens exactly like the real container.\n"
         "4. **Logic puzzles** get 3-call self-consistency (majority vote) — "
         "cheap insurance against a demonstrated flaky-reasoning failure mode.\n"
         "5. **Everything else** is merged by model into as few Fireworks "
         "calls as possible (not one call per category)."
     )
-    st.caption(
-        "Note: this hosted demo doesn't bundle the ~2GB of local model "
-        "weights, so every query here calls Fireworks live — it's showing "
-        "the routing/model-selection logic, not the zero-token local tier "
-        "that runs inside the actual submitted container."
-    )
     st.divider()
-    st.markdown("**Models in play**", help="Only the models actually reachable via ALLOWED_MODELS are used.")
+    st.markdown("**Fireworks models — used when local can't answer**", help="Only the models actually reachable via ALLOWED_MODELS are used.")
     for hint, name, icon_svg, bg in MODEL_BADGES:
+        if hint in ("qwen", "qwen-coder", "local"):
+            continue  # shown below instead
         st.markdown(
             f'<div class="rw-model" style="margin-bottom:6px">'
             f'<div class="rw-avatar" style="background:{bg}">{icon_svg}</div>'
             f'<span>{name}</span></div>',
+            unsafe_allow_html=True,
+        )
+    st.divider()
+    st.markdown(
+        "**Local models — answer 6 of 8 categories for free**",
+        help="Same two GGUF models bundled in the submitted Docker image, actually running in this demo.",
+    )
+    qwen_icon = _mini_svg(_QWEN_PATH, "#6950EF")
+    for hint, name, categories in LOCAL_MODELS:
+        st.markdown(
+            f'<div class="rw-model" style="margin-bottom:6px">'
+            f'<div class="rw-avatar" style="background:#FFFFFF">{qwen_icon}</div>'
+            f'<span>{name}<br><span style="color:#8A8FA3;font-size:0.75rem">{categories}</span></span></div>',
             unsafe_allow_html=True,
         )
     st.divider()
@@ -239,12 +262,23 @@ if run and prompt.strip():
     category = classify(prompt)
     started = time.time()
 
-    local_answer = try_solve_math(prompt) if category == "math" else None
-
     answer, model_used, tokens_used = None, None, 0
-    if local_answer is not None:
-        answer, model_used = local_answer, "local (deterministic)"
-    elif has_creds:
+
+    if category == "math":
+        math_answer = try_solve_math(prompt)
+        if math_answer is not None:
+            answer, model_used = math_answer, "local (deterministic)"
+
+    if answer is None and category in LOCAL_LLM_CATEGORIES:
+        local_answer = local_llm.answer(category, prompt)
+        if local_answer is not None:
+            if category in ("code_debug", "code_gen") and looks_like_python(local_answer):
+                if python_syntax_error(local_answer) is None:
+                    answer, model_used = local_answer, "qwen-coder"
+            else:
+                answer, model_used = local_answer, "qwen"
+
+    if answer is None and has_creds:
         try:
             client = FireworksClient()
             if category == "logic":
@@ -259,7 +293,7 @@ if run and prompt.strip():
         except Exception as exc:
             answer = f"(Fireworks call failed: {exc})"
             model_used = "error"
-    else:
+    elif answer is None:
         answer, model_used = "(no live credentials configured for this demo)", "n/a"
 
     elapsed = time.time() - started

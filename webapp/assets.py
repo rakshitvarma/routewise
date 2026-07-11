@@ -3,7 +3,9 @@ model logos (via Simple Icons, CC0-licensed monochrome brand marks meant to
 be recolored/embedded — used here purely for attribution, not resale).
 Gemma has no dedicated Simple Icons entry, so its badge uses Google
 Gemini's spark mark (same Google DeepMind lineage) with a "(Google)" label
-for clarity.
+for clarity. Kimi likewise has no dedicated entry - its badge uses Moonshot
+AI's mark (Kimi's maker) with a "(Moonshot AI)" label rather than passing
+off an unrelated logo as Kimi's own.
 """
 
 # --- RouteWise's own mark: a routing "fork" - one node branching into
@@ -52,6 +54,16 @@ _GEMINI_PATH = (
     '4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 '
     '3.81 2.55t2.55 3.81'
 )
+_QWEN_PATH = (
+    'M23.919 14.545 20.817 9.17l1.47-2.544a.56.56 0 0 0 0-.566l-1.633-2.83a.57.57 0 0 0-.49-.283'
+    'h-6.207L12.487.402a.57.57 0 0 0-.49-.284H8.732a.56.56 0 0 0-.49.284L5.139 5.775h-2.94a.56.56 '
+    '0 0 0-.49.284L.077 8.887a.56.56 0 0 0 0 .567L3.18 14.83l-1.47 2.545a.56.56 0 0 0 0 .566l1.634 '
+    '2.83a.57.57 0 0 0 .49.283h6.205l1.47 2.545a.57.57 0 0 0 .49.284h3.266a.57.57 0 0 0 '
+    '.49-.284l3.104-5.375h2.94a.57.57 0 0 0 .49-.283l1.634-2.828a.55.55 0 0 0-.004-.568M8.733.686'
+    'l1.634 2.828-1.634 2.828H21.8L20.164 9.17H7.425L5.63 6.06Zm1.306 19.801-6.205-.002 1.634-2.83'
+    'h3.265L2.201 6.344h3.267q3.182 5.517 6.367 11.032zm10.124-5.66L18.53 12l-6.532 11.315-1.634-2.83'
+    'c2.129-3.673 4.25-7.351 6.373-11.028h3.592l3.102 5.374z'
+)
 
 
 def _mini_svg(path: str, fill: str, size: int = 14) -> str:
@@ -72,7 +84,17 @@ _BOLT_SVG = _mini_svg(
 
 MODEL_BADGES = [
     ("minimax", "MiniMax M3", _mini_svg(_MINIMAX_PATH, "#E73562"), "#FFFFFF"),
-    ("kimi", "Kimi K2.7", _mini_svg(_MOONSHOT_PATH, "#111111"), "#FFFFFF"),
+    ("kimi", "Kimi (Moonshot AI)", _mini_svg(_MOONSHOT_PATH, "#111111"), "#FFFFFF"),
     ("gemma", "Gemma (Google)", _mini_svg(_GEMINI_PATH, "#8E75B2"), "#FFFFFF"),
+    ("qwen-coder", "Qwen2.5-Coder-1.5B", _mini_svg(_QWEN_PATH, "#6950EF"), "#FFFFFF"),
+    ("qwen", "Qwen2.5-1.5B", _mini_svg(_QWEN_PATH, "#6950EF"), "#FFFFFF"),
     ("local", "Local (0 tokens)", _BOLT_SVG, "linear-gradient(135deg,#43E97B,#38F9D7)"),
+]
+
+# The two GGUF models actually bundled in the submitted Docker image
+# (router/local_llm.py) - shown as a static reference section since this
+# hosted demo doesn't run them itself (see the caption in app.py).
+LOCAL_MODELS = [
+    ("qwen", "Qwen2.5-1.5B-Instruct", "factual, sentiment, NER, summarisation"),
+    ("qwen-coder", "Qwen2.5-Coder-1.5B-Instruct", "code_debug, code_gen"),
 ]

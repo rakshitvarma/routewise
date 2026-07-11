@@ -41,7 +41,7 @@ _SYSTEM_PROMPTS = {
 }
 
 _MAX_TOKENS = {
-    "factual": 70,
+    "factual": 130,
     "sentiment": 40,
     "summarization": 100,
     "ner": 80,
