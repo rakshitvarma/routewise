@@ -4,27 +4,20 @@
 // (Kimi's maker) stand in, both clearly labelled rather than passed off
 // as the thing's own logo.
 
-export const FairwindLogo = ({ size = 36 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-    <defs>
-      <linearGradient id="rwGrad" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0%" stopColor="#A78BFA" />
-        <stop offset="55%" stopColor="#60E6D8" />
-        <stop offset="100%" stopColor="#5CC8FC" />
-      </linearGradient>
-    </defs>
+// Brand mark: folded-ribbon "F" + accent dot, per the Fairwind brand sheet
+// (dark-mode primary: white mark, #0A4DBB dot).
+export const FairwindLogo = ({ size = 36, className = "" }: { size?: number; className?: string }) => (
+  <svg width={size} height={size} viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" className={className}>
     <path
-      d="M12 20 L12 14 M12 14 L5 6 M12 14 L12 5 M12 14 L19 6"
-      stroke="url(#rwGrad)"
-      strokeWidth="2.1"
-      strokeLinecap="round"
-      fill="none"
+      d="M14 6 H34 Q37 6 35 8.6 L21 26 Q19.4 28 16.8 28 H12 Q9 28 9 25 V11 Q9 7.5 12 6.6 Z"
+      fill="#FFFFFF"
     />
-    <circle cx="12" cy="20" r="2.5" fill="#C8BEFA" />
-    <circle cx="12" cy="14" r="1.6" fill="#C8BEFA" />
-    <circle cx="5" cy="6" r="2.2" fill="#A78BFA" />
-    <circle cx="12" cy="5" r="2.2" fill="#60E6D8" />
-    <circle cx="19" cy="6" r="2.2" fill="#5CC8FC" />
+    <path
+      d="M12 20 H26 Q29 20 27 22.6 L17.5 34.4 Q15.8 36.5 13.1 36.5 H10 Q7 36.5 7 33.5 V25 Q7 21.5 10 20.4 Z"
+      fill="#FFFFFF"
+      opacity="0.92"
+    />
+    <circle cx="32" cy="34" r="6" fill="#0A4DBB" />
   </svg>
 );
 

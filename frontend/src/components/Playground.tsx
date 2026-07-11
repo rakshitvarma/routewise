@@ -1,7 +1,7 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { routeTask, type RouteResponse } from "../api";
-import { CATEGORY_META } from "../assets";
+import { CATEGORY_META, FairwindLogo } from "../assets";
 import { EXAMPLES } from "../examples";
 import { CategoryPill, ModelBadge, Chip } from "./Badge";
 
@@ -39,7 +39,7 @@ export function Playground({
           <button
             key={ex.label}
             onClick={() => setPrompt(ex.prompt)}
-            className="rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-300 transition hover:border-violet-500/50 hover:bg-neutral-800 hover:text-white"
+            className="rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-300 transition hover:border-[#3B7BFF]/50 hover:bg-neutral-800 hover:text-white"
           >
             <span className="mr-1.5">{CATEGORY_META[ex.category]?.icon}</span>
             {ex.label}
@@ -52,15 +52,16 @@ export function Playground({
         onChange={(e) => setPrompt(e.target.value)}
         placeholder="Type a task, or pick an example above…"
         rows={4}
-        className="w-full resize-none rounded-xl border border-neutral-800 bg-neutral-900/80 p-4 text-[15px] text-neutral-100 placeholder-neutral-600 outline-none focus:border-violet-500/60"
+        className="w-full resize-none rounded-xl border border-neutral-800 bg-neutral-900/80 p-4 text-[15px] text-neutral-100 placeholder-neutral-600 outline-none focus:border-[#3B7BFF]/60"
       />
 
-      <div className="mt-4 flex items-center justify-between">
+      <div className="mt-4 flex items-center justify-between gap-3">
         <button
           onClick={submit}
           disabled={loading || !prompt.trim()}
-          className="rounded-xl bg-gradient-to-r from-violet-500 to-sky-400 px-5 py-2.5 text-sm font-semibold text-black shadow-lg shadow-violet-500/20 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+          className="flex items-center gap-2.5 rounded-xl bg-gradient-to-r from-[#0A4DBB] to-[#3B7BFF] px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-[#0A4DBB]/25 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
         >
+          {loading && <FairwindLogo size={18} className="animate-fairwind-pulse" />}
           {loading ? "Routing…" : "Route & Answer →"}
         </button>
       </div>
