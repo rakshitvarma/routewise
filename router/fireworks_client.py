@@ -7,6 +7,7 @@ token lever available, matching the top leaderboard entry's approach.
 import json
 import os
 import re
+from collections import defaultdict
 from typing import Dict, List, Tuple
 
 import requests
@@ -180,6 +181,113 @@ class FireworksClient:
         if len(items) > 1 and len(distinct_values) == 1 and len(next(iter(distinct_values))) > 200:
             return {tid: self.answer_batch(category, [(tid, p)])[tid] for tid, p in items}
         return result
+
+    def answer_all(self, buckets: Dict[str, List[Tuple[str, str]]]) -> Dict[str, str]:
+        """Merge every category routed to the same model into one call,
+        instead of one call per category - the top leaderboard entry's own
+        breakdown lists this exact merge as one of its biggest token-count
+        reductions ("Merged all other categories into one direct batch").
+        Falls back per-item on parse gaps or degenerate/repeated output.
+        """
+        results: Dict[str, str] = {}
+
+        # Logic puzzles get dedicated self-consistency handling (see
+        # _answer_logic below) rather than joining the generic merged-batch
+        # path: verified empirically that a single call can flip between a
+        # correct answer and one that directly contradicts its own stated
+        # constraints (model non-determinism on harder reasoning, not a
+        # batching artifact - reproduced both isolated and batched).
+        logic_items = buckets.get("logic", [])
+        if logic_items:
+            model = self.pick_model("logic")
+            for task_id, prompt in logic_items:
+                results[task_id] = self._answer_logic(model, prompt)
+
+        model_groups: Dict[str, List[Tuple[str, str, str]]] = defaultdict(list)
+        for category, items in buckets.items():
+            if category == "logic":
+                continue
+            model = self.pick_model(category)
+            for task_id, prompt in items:
+                model_groups[model].append((task_id, category, prompt))
+
+        for group_key, entries in model_groups.items():
+            if not entries:
+                continue
+            model = group_key.split("::", 1)[0]
+            if len(entries) == 1:
+                task_id, category, prompt = entries[0]
+                content = self._complete(
+                    model, _SYSTEM_PROMPTS[category], prompt,
+                    _MAX_TOKENS[category], json_mode=False,
+                )
+                results[task_id] = content.strip()
+                continue
+
+            ids = ", ".join(f'"{tid}"' for tid, _, _ in entries)
+            lines = [
+                f"Return ONLY a JSON object with exactly these keys: {ids}. "
+                "Each task below has a bracketed style instruction - follow it "
+                "exactly. No other text outside the JSON object.", "",
+            ]
+            max_tokens = 20 * len(entries)
+            for task_id, category, prompt in entries:
+                lines.append(f'"{task_id}" [{_SYSTEM_PROMPTS[category]}]: {prompt}')
+                max_tokens += _MAX_TOKENS[category]
+
+            content = self._complete(
+                model,
+                "Answer a batch of unrelated tasks, each with its own style instruction.",
+                "\n".join(lines), max_tokens,
+            )
+            parsed = self._parse_answers(content, [tid for tid, _, _ in entries])
+
+            distinct_values = {v for v in parsed.values()}
+            degenerate = len(distinct_values) == 1 and len(next(iter(distinct_values))) > 200
+            for task_id, category, prompt in entries:
+                answer = "" if degenerate else parsed.get(task_id, "").strip()
+                if not answer:
+                    # Missing key or degenerate batch: one corrective
+                    # single-task call rather than submitting an empty/wrong
+                    # answer that's a guaranteed miss on the accuracy gate.
+                    answer = self._complete(
+                        model, _SYSTEM_PROMPTS[category], prompt,
+                        _MAX_TOKENS[category], json_mode=False,
+                    ).strip()
+                results[task_id] = answer
+
+        return results
+
+    def _answer_logic(self, model: str, prompt: str) -> str:
+        """Self-consistency (3 independent calls, majority vote) for
+        constraint puzzles. Costs ~3x the tokens of a single call, but this
+        is spent only on however few logic tasks appear (typically a small
+        slice of the 19 fixed tasks), and directly targets a demonstrated
+        failure mode: this exact class of puzzle flipped between a correct
+        answer and a self-contradictory one across otherwise-identical calls.
+        """
+        responses = [
+            self._complete(model, _SYSTEM_PROMPTS["logic"], prompt, _MAX_TOKENS["logic"], json_mode=False).strip()
+            for _ in range(3)
+        ]
+
+        def key_of(text: str) -> str:
+            m = re.search(r"\*\*([^*]+)\*\*", text)
+            if m:
+                return m.group(1).strip().lower()
+            m = re.search(r"\b([A-Z][a-z]+)\b", text)
+            return m.group(1).lower() if m else text[:30].lower()
+
+        keys = [key_of(r) for r in responses]
+        counts = {}
+        for k in keys:
+            counts[k] = counts.get(k, 0) + 1
+        top_key = max(counts, key=counts.get)
+        if counts[top_key] >= 2:
+            for r, k in zip(responses, keys):
+                if k == top_key:
+                    return r
+        return responses[0]  # no majority (all 3 disagreed) - best effort
 
     def fix_code(self, category: str, prompt: str, broken_answer: str, error: str) -> str:
         """One corrective call for a single task whose code failed to parse."""

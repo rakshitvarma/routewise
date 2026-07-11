@@ -54,27 +54,27 @@ def main():
 
     if any(buckets.values()):
         client = FireworksClient()
-        for category, items in buckets.items():
-            if not items:
-                continue
+        try:
+            merged_answers = client.answer_all(buckets)
+        except Exception:
             try:
-                batch_answers = client.answer_batch(category, items)
-            except Exception:
-                try:
-                    batch_answers = client.answer_batch(category, items)  # one retry
-                except Exception as exc:
-                    print(f"[warn] category={category} failed twice: {exc}", file=sys.stderr)
-                    batch_answers = {tid: "" for tid, _ in items}
-            for task_id, prompt in items:
-                answer = batch_answers.get(task_id, "")
-                if category in ("code_debug", "code_gen") and looks_like_python(answer):
-                    err = python_syntax_error(answer)
-                    if err:
-                        try:
-                            answer = client.fix_code(category, prompt, answer, err)
-                        except Exception as exc:
-                            print(f"[warn] fix_code failed for {task_id}: {exc}", file=sys.stderr)
-                answers[task_id] = answer
+                merged_answers = client.answer_all(buckets)  # one retry
+            except Exception as exc:
+                print(f"[warn] answer_all failed twice: {exc}", file=sys.stderr)
+                merged_answers = {}
+
+        category_by_task = {tid: cat for cat, items in buckets.items() for tid, _ in items}
+        prompt_by_task = {tid: p for items in buckets.values() for tid, p in items}
+        for task_id, category in category_by_task.items():
+            answer = merged_answers.get(task_id, "")
+            if category in ("code_debug", "code_gen") and looks_like_python(answer):
+                err = python_syntax_error(answer)
+                if err:
+                    try:
+                        answer = client.fix_code(category, prompt_by_task[task_id], answer, err)
+                    except Exception as exc:
+                        print(f"[warn] fix_code failed for {task_id}: {exc}", file=sys.stderr)
+            answers[task_id] = answer
         print(
             f"[stats] fireworks_calls={client.total_calls} "
             f"total_tokens={client.total_tokens}",
