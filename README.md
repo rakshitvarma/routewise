@@ -12,6 +12,9 @@ tasks that genuinely need it — the same core idea generalizes beyond this
 hackathon to any team routing requests across multiple LLM providers to
 cut inference spend without sacrificing accuracy.
 
+**Live demo:** https://routewise-amd.streamlit.app/
+**Docker image:** `ghcr.io/rakshitvarma/routewise:latest`
+
 ## Architecture
 
 ```
