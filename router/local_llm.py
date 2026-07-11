@@ -38,6 +38,30 @@ _llm_cache = {}
 _load_failed = set()
 
 
+def _available_cpus() -> int:
+    """CPU count that respects cgroup limits, unlike os.cpu_count() which
+    reports the host's cores even inside a --cpus-limited container. On the
+    2-vCPU grading box, os.cpu_count() returns the host's (e.g. 16), so
+    llama.cpp would spawn 16 threads fighting over 2 cores - severe
+    context-switch thrash that made a 46s run take 372s under test."""
+    # Linux cgroup v2 quota
+    try:
+        with open("/sys/fs/cgroup/cpu.max") as f:
+            quota, period = f.read().split()
+            if quota != "max":
+                return max(1, int(int(quota) / int(period)))
+    except Exception:
+        pass
+    # cgroup-aware affinity (Docker --cpuset), then fall back to host count
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except AttributeError:
+        return max(1, os.cpu_count() or 2)
+
+
+_N_THREADS = int(os.environ.get("LOCAL_LLM_THREADS", _available_cpus()))
+
+
 def _get_llm(model_key: str):
     if model_key in _llm_cache:
         return _llm_cache[model_key]
@@ -52,7 +76,7 @@ def _get_llm(model_key: str):
         llm = Llama(
             model_path=path,
             n_ctx=1024,
-            n_threads=max(1, os.cpu_count() or 2),
+            n_threads=_N_THREADS,
             verbose=False,
         )
         _llm_cache[model_key] = llm
