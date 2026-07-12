@@ -152,7 +152,14 @@ _SYSTEM_PROMPTS = {
 }
 
 _MAX_TOKENS = {
-    "sentiment": 40, "ner": 80, "factual": 130, "summarization": 100,
+    # factual bumped 130->200 and ner 80->100 after a stress test showed
+    # the newer, more verbose Qwen3-4B model can run past the old budgets
+    # (tuned for the smaller 1.5B models) on questions that invite a
+    # longer answer, truncating mid-sentence - same failure mode already
+    # fixed once for the Fireworks math category. Sentiment/summarization
+    # are naturally self-limiting (one label+clause; explicit format
+    # constraints) so left as-is.
+    "sentiment": 40, "ner": 100, "factual": 200, "summarization": 100,
     "code_debug": 250, "code_gen": 300,
 }
 
