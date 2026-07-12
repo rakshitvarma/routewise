@@ -9,7 +9,7 @@ import os
 import re
 import sys
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Tuple
 
 import requests
@@ -335,12 +335,23 @@ class FireworksClient:
             model = self.pick_model("logic")
             # Independent per-task self-consistency runs - run multiple
             # logic tasks concurrently too, not just the 3 calls inside each.
+            # ThreadPoolExecutor.map()'s iterator raises at the position of
+            # the first failing task and *silently discards every result
+            # after it*, even ones that finished successfully in the
+            # background (verified empirically) - as_completed + a per-future
+            # try/except is required so one logic task's failure can't wipe
+            # out every other logic task's already-correct answer.
             with ThreadPoolExecutor(max_workers=max(1, len(logic_items))) as pool:
-                logic_answers = list(pool.map(
-                    lambda item: self._answer_logic(model, item[1]), logic_items
-                ))
-            for (task_id, _), answer in zip(logic_items, logic_answers):
-                results[task_id] = answer
+                future_to_task = {
+                    pool.submit(self._answer_logic, model, prompt): task_id
+                    for task_id, prompt in logic_items
+                }
+                for future in as_completed(future_to_task):
+                    task_id = future_to_task[future]
+                    try:
+                        results[task_id] = future.result()
+                    except Exception as exc:
+                        print(f"[warn] logic task {task_id} failed entirely: {exc}", file=sys.stderr)
 
         model_groups: Dict[str, List[Tuple[str, str, str]]] = defaultdict(list)
         for category, items in buckets.items():
@@ -403,9 +414,23 @@ class FireworksClient:
         if groups:
             # Each group is an independent HTTP call (often to a different
             # model) - run them concurrently instead of one after another.
+            # pool.map()'s iterator raises at the position of the first
+            # group that throws and *silently discards every group's result
+            # after it in iteration order*, even ones that already completed
+            # successfully in the background (verified empirically: a single
+            # failing model group could wipe out every other category's
+            # already-correct answers - a very plausible cause of a total
+            # accuracy-gate failure from one transient Fireworks error).
+            # as_completed + a per-future try/except isolates each group's
+            # failure to just that group's own tasks.
             with ThreadPoolExecutor(max_workers=len(groups)) as pool:
-                for group_results in pool.map(lambda kv: _resolve_group(*kv), groups):
-                    results.update(group_results)
+                future_to_key = {pool.submit(_resolve_group, k, v): k for k, v in groups}
+                for future in as_completed(future_to_key):
+                    group_key = future_to_key[future]
+                    try:
+                        results.update(future.result())
+                    except Exception as exc:
+                        print(f"[warn] Fireworks group {group_key} failed entirely: {exc}", file=sys.stderr)
 
         return results
 
@@ -420,13 +445,26 @@ class FireworksClient:
         # The 3 calls are independent (same prompt, sampled separately) - run
         # them concurrently rather than serialized, to cut 3x network
         # round-trip latency down to ~1x. Same tokens, same accuracy.
+        # Isolated per-sample (as_completed + try/except, not pool.map): if
+        # one sample errors, the other 1-2 successful samples should still
+        # be usable for majority voting rather than the whole task failing.
         with ThreadPoolExecutor(max_workers=3) as pool:
-            responses = list(pool.map(
-                lambda _: self._complete(
-                    model, _SYSTEM_PROMPTS["logic"], prompt, _MAX_TOKENS["logic"], json_mode=False
-                ).strip(),
-                range(3),
-            ))
+            futures = [
+                pool.submit(
+                    lambda: self._complete(
+                        model, _SYSTEM_PROMPTS["logic"], prompt, _MAX_TOKENS["logic"], json_mode=False
+                    ).strip()
+                )
+                for _ in range(3)
+            ]
+            responses = []
+            for future in as_completed(futures):
+                try:
+                    responses.append(future.result())
+                except Exception as exc:
+                    print(f"[warn] a logic self-consistency sample failed: {exc}", file=sys.stderr)
+        if not responses:
+            raise RuntimeError("all 3 logic self-consistency samples failed")
 
         def key_of(text: str) -> str:
             m = re.search(r"\*\*([^*]+)\*\*", text)

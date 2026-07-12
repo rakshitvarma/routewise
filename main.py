@@ -13,6 +13,7 @@ degraded form, since malformed output or a crash scores zero.
 import json
 import os
 import sys
+import threading
 import time
 from collections import defaultdict
 
@@ -62,6 +63,17 @@ _TIME_BUDGET_SECONDS = float(os.environ.get("TIME_BUDGET_SECONDS", "420"))
 # falls through to Fireworks like any other unresolved task.
 LOCAL_LLM_CATEGORIES = {"sentiment", "ner", "factual", "summarization", "code_debug", "code_gen"}
 
+# Absolute last-resort backstop, independent of _TIME_BUDGET_SECONDS (which
+# only stops *starting* new slow local attempts - it can't help if a call
+# already in progress hangs, e.g. under host contention we've directly
+# observed calls take 500s+). A background thread force-flushes whatever
+# answers exist so far and hard-exits the whole process, regardless of what
+# the main thread is stuck on - a SIGALRM-style in-thread interrupt doesn't
+# work here (verified: llama.cpp's blocking native call never yields back
+# to Python for a signal handler to fire), but killing the process from a
+# separate thread does. 560s leaves a 40s margin under the 10-minute cap.
+_HARD_DEADLINE_SECONDS = float(os.environ.get("HARD_DEADLINE_SECONDS", "560"))
+
 
 def load_tasks(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -69,14 +81,46 @@ def load_tasks(path):
 
 
 def write_results(path, results):
+    """Atomic write (write to a temp file, then os.replace) - a plain
+    open(path, "w") leaves a truncated/corrupt file if the process is
+    killed mid-write (external timeout kill, OOM, watchdog exit); the
+    grader would then see invalid JSON instead of whatever we'd already
+    computed. os.replace is atomic on both POSIX and Windows."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
+
+
+def normalize_tasks(tasks):
+    """Pair every input task with a task_id, generating a placeholder
+    (task-N) for any task missing one instead of dropping it - the output
+    must always have exactly one row per input row. A grader that expects
+    len(results) == len(tasks) (or a 1:1 task_id correspondence it can't
+    find) may treat a shorter results file as invalid, which is a far
+    worse outcome than one row answered with an empty string."""
+    normalized = []
+    for i, task in enumerate(tasks):
+        if isinstance(task, dict) and task.get("task_id") is not None:
+            task_id = task["task_id"]
+        else:
+            task_id = f"task-{i + 1}"
+            print(f"[warn] task at index {i} has no task_id, using placeholder {task_id!r}: {task!r}", file=sys.stderr)
+        normalized.append((task_id, task))
+    return normalized
 
 
 def main():
     started = time.time()
     tasks = load_tasks(INPUT_PATH)
+    normalized_tasks = normalize_tasks(tasks)
+    all_task_ids = [tid for tid, _ in normalized_tasks]
+
+    # Write a valid placeholder result immediately, before any inference -
+    # so even a crash/kill in the first second still leaves a minimally
+    # valid (if empty) file on disk rather than nothing at all.
+    write_results(OUTPUT_PATH, [{"task_id": tid, "answer": ""} for tid in all_task_ids])
 
     answers = {}
     buckets = defaultdict(list)  # category -> [(task_id, prompt)]
@@ -88,16 +132,30 @@ def main():
     seen_prompts = {}   # prompt -> task_id whose answer to copy
     dup_of = {}         # task_id -> earlier task_id with the identical prompt
 
-    for task in tasks:
+    def _flush_snapshot():
+        snapshot = dict(answers)
+        for dup_id, earlier_id in dup_of.items():
+            snapshot[dup_id] = snapshot.get(earlier_id, "")
+        write_results(OUTPUT_PATH, [{"task_id": tid, "answer": snapshot.get(tid, "")} for tid in all_task_ids])
+
+    def _watchdog():
+        time.sleep(_HARD_DEADLINE_SECONDS)
+        print(f"[fatal] hard deadline ({_HARD_DEADLINE_SECONDS:.0f}s) reached - "
+              f"force-flushing {len(answers)}/{len(all_task_ids)} answers and exiting", file=sys.stderr)
+        try:
+            _flush_snapshot()
+        except Exception as exc:
+            print(f"[fatal] watchdog flush failed: {exc}", file=sys.stderr)
+        os._exit(0)  # a stuck call in the main thread can't be interrupted - kill the process instead
+
+    threading.Thread(target=_watchdog, daemon=True).start()
+
+    for task_id, task in normalized_tasks:
         # A single malformed task (missing/wrong-typed field, unexpected
         # content) must not lose every other task's already-computed
         # answer - isolate each task's processing so one bad entry
         # degrades to a missing answer for *that task only*, not a crash
         # that discards the whole batch via the outer handler.
-        task_id = task.get("task_id") if isinstance(task, dict) else None
-        if task_id is None:
-            print(f"[warn] skipping task with no task_id: {task!r}", file=sys.stderr)
-            continue
         try:
             prompt = task["prompt"]
 
@@ -182,6 +240,13 @@ def main():
             # string in the final results, exactly like an unresolved
             # Fireworks task, rather than aborting everything else.
 
+    # Computed unconditionally, before the Fireworks try block, so a last-
+    # resort local fallback below can still find each bucketed task's
+    # category/prompt even if FireworksClient() itself never constructs
+    # (e.g. a missing/misnamed env var) or answer_all() fails entirely.
+    category_by_task = {tid: cat for cat, items in buckets.items() for tid, _ in items}
+    prompt_by_task = {tid: p for items in buckets.values() for tid, p in items}
+
     if any(buckets.values()):
         # Everything in this block is best-effort: if FireworksClient()
         # itself fails (e.g. a required env var missing) or anything else
@@ -203,8 +268,6 @@ def main():
                     merged_answers = {}
             print(f"[timing] t={time.time()-started:.1f}s Fireworks phase (answer_all) done", file=sys.stderr)
 
-            category_by_task = {tid: cat for cat, items in buckets.items() for tid, _ in items}
-            prompt_by_task = {tid: p for items in buckets.values() for tid, p in items}
             for task_id, category in category_by_task.items():
                 answer = merged_answers.get(task_id, "")
                 if category in ("code_debug", "code_gen") and looks_like_python(answer):
@@ -224,11 +287,34 @@ def main():
         except Exception as exc:
             print(f"[warn] Fireworks phase failed entirely: {exc}", file=sys.stderr)
 
+    # Last-resort tier: an empty string is a guaranteed miss on the accuracy
+    # gate, while an ungated local answer at least has a real chance of
+    # being right. This only fires for tasks that reached this point with
+    # no answer at all - i.e. Fireworks was unreachable/misconfigured, or a
+    # specific model group failed entirely (see fireworks_client.py's
+    # as_completed fix for why other groups no longer get taken down with
+    # it) - never overrides an answer Fireworks or local already provided.
+    for task_id, category in category_by_task.items():
+        if answers.get(task_id):
+            continue
+        prompt = prompt_by_task.get(task_id)
+        if prompt is None:
+            continue
+        try:
+            fallback = local_llm.answer(category, prompt)
+        except Exception as exc:
+            print(f"[warn] last-resort local answer failed for {task_id}: {exc}", file=sys.stderr)
+            fallback = None
+        if fallback is not None:
+            if category in ("code_debug", "code_gen"):
+                fallback = strip_code_fence(fallback)
+            answers[task_id] = fallback
+            print(f"[timing] t={time.time()-started:.1f}s {task_id} ({category}) recovered via last-resort local answer", file=sys.stderr)
+
     for dup_id, earlier_id in dup_of.items():
         answers[dup_id] = answers.get(earlier_id, "")
 
-    task_ids = [t.get("task_id") for t in tasks if isinstance(t, dict) and t.get("task_id") is not None]
-    results = [{"task_id": tid, "answer": answers.get(tid, "")} for tid in task_ids]
+    results = [{"task_id": tid, "answer": answers.get(tid, "")} for tid in all_task_ids]
     write_results(OUTPUT_PATH, results)
     print(f"[done] {len(results)} tasks in {time.time() - started:.1f}s", file=sys.stderr)
 
@@ -243,8 +329,7 @@ if __name__ == "__main__":
         try:
             tasks = load_tasks(INPUT_PATH)
             write_results(OUTPUT_PATH, [
-                {"task_id": t["task_id"], "answer": ""} for t in tasks
-                if isinstance(t, dict) and t.get("task_id") is not None
+                {"task_id": tid, "answer": ""} for tid, _ in normalize_tasks(tasks)
             ])
         except Exception:
             write_results(OUTPUT_PATH, [])
