@@ -38,17 +38,18 @@ tasks.json -> classifier (regex, 0 tokens)
    understanding (discounts, percentages framed as text, projections) are
    deliberately left to Fireworks — guessing wrong locally costs an
    accuracy-gate failure, which is far more expensive than a few tokens.
-3. **Two bundled local models** (`router/local_llm.py`, ~1GB GGUF each,
-   CPU inference via `llama-cpp-python`) answer six of the eight
-   categories entirely for free:
-   - `qwen2.5-1.5b-instruct-q4_k_m.gguf` — factual, sentiment, NER, summarisation
-   - `qwen2.5-coder-1.5b-instruct-q4_k_m.gguf` — code_debug, code_gen
-   Every local answer is sanity-checked before being trusted (non-empty,
-   non-degenerate, category-appropriate shape; code answers additionally
-   go through the same `python_syntax_error` check used for Fireworks
-   corrections). Anything that fails the check falls through to Fireworks
-   exactly like an unsolved math expression does — the local tier is pure
-   upside, never a hard dependency.
+3. **One bundled local model** (`router/local_llm.py`, Qwen3-4B-Instruct-2507,
+   ~2.5GB GGUF, CPU inference via `llama-cpp-python`) answers six of the
+   eight categories entirely for free: factual, sentiment, NER,
+   summarisation, code_debug, code_gen. Every local answer is gated behind
+   a self-consistency confidence check (`answer_confident`) rather than a
+   fixed sanity check: the deterministic sample has to agree with 2 more
+   stochastic samples, and that agreement signal is looked up against a
+   calibration curve fitted from real labelled observations
+   (`router/calibrate.py`) before being trusted. Anything that fails the
+   gate falls through to Fireworks exactly like an unsolved math
+   expression does — the local tier is pure upside, never a hard
+   dependency.
 4. **Math word problems and logic puzzles stay on Fireworks** rather than
    the local models, deliberately. Math word problems already had a
    reliable Fireworks track record; logic puzzles get **dedicated

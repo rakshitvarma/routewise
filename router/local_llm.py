@@ -1,18 +1,20 @@
-"""Genuine local zero-token inference via bundled quantized GGUF models.
+"""Genuine local zero-token inference via a bundled quantized GGUF model.
 
 Distinct from router/solvers.py (which only answers when it can *prove*
 correctness): this is real language-model inference, so each category
 routed here has been checked against router/eval_local.py first, and every
-answer still passes a lightweight sanity check before being trusted over
-escalating to Fireworks.
+answer still passes a confidence gate (see answer_confident) before being
+trusted over escalating to Fireworks.
 
-Two small models cover different category groups:
-  - "general": sentiment / NER / factual / summarisation
-  - "code":    code_debug / code_gen (code-specialized, verified via
-    router.solvers.python_syntax_error before being trusted)
-Both are lazy-loaded (only the models actually needed for the tasks in a
-given run get loaded), and loading/inference failures degrade to None so
-main.py's existing Fireworks fallback always covers the gap.
+One consolidated model (Qwen3-4B-Instruct-2507) covers every locally-
+eligible category - sentiment / NER / factual / summarisation /
+code_debug / code_gen. Earlier versions used two separate 1.5B models
+(general + code-specialized), but Qwen3-4B handles code well enough on
+its own to drop the dedicated coder model, at a similar combined memory
+footprint to a single model rather than two loaded models. Lazy-loaded
+(only loaded if a task in a given run actually needs it), and loading/
+inference failures degrade to None so main.py's Fireworks fallback always
+covers the gap.
 """
 import os
 import re
@@ -24,22 +26,17 @@ _MODELS_DIR = os.environ.get(
 )
 
 _MODEL_PATHS = {
-    "general": os.environ.get("LOCAL_GENERAL_MODEL_PATH", os.path.join(_MODELS_DIR, "qwen2.5-1.5b-instruct-q4_k_m.gguf")),
-    "code": os.environ.get("LOCAL_CODE_MODEL_PATH", os.path.join(_MODELS_DIR, "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf")),
+    "general": os.environ.get("LOCAL_GENERAL_MODEL_PATH", os.path.join(_MODELS_DIR, "qwen3-4b-instruct-2507-q4_k_m.gguf")),
 }
 
-# Same source/sizes as the Dockerfile's build-time download - used here so
+# Same source/size as the Dockerfile's build-time download - used here so
 # any environment without the weights pre-staged (e.g. the hosted demo,
-# which can't commit ~2GB into git) can fetch them on first use instead of
-# silently falling back to Fireworks for every "local" category.
+# which can't commit ~2.5GB into git) can fetch them on first use instead
+# of silently falling back to Fireworks for every "local" category.
 _MODEL_DOWNLOAD = {
     "general": (
-        "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
-        1117320736,
-    ),
-    "code": (
-        "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
-        1117320768,
+        "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        2497281120,
     ),
 }
 
@@ -76,8 +73,8 @@ _CATEGORY_MODEL = {
     "ner": "general",
     "factual": "general",
     "summarization": "general",
-    "code_debug": "code",
-    "code_gen": "code",
+    "code_debug": "general",
+    "code_gen": "general",
 }
 
 _llm_cache = {}
@@ -161,10 +158,9 @@ _MAX_TOKENS = {
 
 
 def preload() -> None:
-    """Download + load both models up front (used by the webapp so the
-    first user query isn't the one paying for a ~2GB download)."""
-    for model_key in ("general", "code"):
-        _get_llm(model_key)
+    """Download + load the model up front (used by the webapp so the
+    first user query isn't the one paying for the ~2.5GB download)."""
+    _get_llm("general")
 
 
 def available(category: str = "general") -> bool:
@@ -227,21 +223,101 @@ def _jaccard(a: set, b: set) -> float:
     return len(a & b) / len(a | b)
 
 
-# Agreement thresholds tuned conservatively: escalating a task that could
-# have been answered correctly for free costs a few tokens, but trusting a
+# Fallback thresholds, used only for a category the calibration curve
+# (router/calibration.json, built by router/calibrate.py) doesn't cover
+# yet - tuned conservatively since escalating a task that could have been
+# answered correctly for free costs a few tokens, but trusting a
 # locally-generated answer that later turns out wrong costs the accuracy
 # gate - the more expensive mistake, by far.
 _OVERLAP_THRESHOLD = 0.40
+_VOTE_THRESHOLD = 0.66  # i.e. >=2 of 3 samples agreeing
+
+# Target reliability once a real calibration curve is available: only
+# trust a local answer when the fitted P(correct) at its confidence signal
+# meets this bar.
+_TARGET_RELIABILITY = 0.85
+
+_CALIBRATION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "calibration.json")
+_calibration_cache = None
 
 
-def answer_confident(category: str, prompt: str) -> Optional[str]:
-    """Self-consistency gated version of answer(): the deterministic
-    (temperature=0) sample must also agree with 2 additional stochastic
-    samples before being trusted, using a category-appropriate agreement
-    signal. Disagreement escalates to Fireworks (returns None) rather than
-    risking a locally-generated wrong answer - same principle as the
-    3-call majority vote already used for logic puzzles and math word
-    problems, generalized to every locally-eligible category.
+def _load_calibration() -> dict:
+    global _calibration_cache
+    if _calibration_cache is not None:
+        return _calibration_cache
+    try:
+        import json
+        with open(_CALIBRATION_PATH) as f:
+            _calibration_cache = json.load(f)
+    except Exception:
+        _calibration_cache = {}
+    return _calibration_cache
+
+
+def _calibrated_probability(points: list, signal: float) -> float:
+    """Linear interpolation over an isotonic curve's (signal, p_correct)
+    breakpoints, sorted ascending by signal."""
+    if not points:
+        return 0.0
+    if signal <= points[0][0]:
+        return points[0][1]
+    if signal >= points[-1][0]:
+        return points[-1][1]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if x0 <= signal <= x1:
+            if x1 == x0:
+                return y0
+            t = (signal - x0) / (x1 - x0)
+            return y0 + t * (y1 - y0)
+    return points[-1][1]
+
+
+def confidence_signal(category: str, primary: str, samples: list) -> Optional[float]:
+    """Raw self-consistency agreement signal in [0, 1] - higher means the
+    independent samples agreed more. Category-appropriate since there's no
+    single generic way to compare free-text vs. discrete-label answers.
+    Shared by answer_confident() (the runtime gate) and calibrate.py (which
+    fits the isotonic curve this signal is looked up against).
+    """
+    if category == "sentiment":
+        labels = [_label_of(category, s) for s in samples]
+        labels = [l for l in labels if l is not None]
+        if len(labels) < 2:
+            return None
+        counts = {}
+        for l in labels:
+            counts[l] = counts.get(l, 0) + 1
+        _, top_count = max(counts.items(), key=lambda kv: kv[1])
+        return top_count / len(labels)
+
+    if category in ("code_debug", "code_gen"):
+        # Syntax validity across independent samples is the agreement
+        # signal for code: if the model can only produce valid syntax
+        # some of the time for this exact prompt, it's shaky on it.
+        from router.solvers import looks_like_python, python_syntax_error
+        valid_count = sum(
+            1 for s in samples
+            if looks_like_python(s) and python_syntax_error(s) is None
+        )
+        return valid_count / len(samples)
+
+    # factual / ner / summarization: no clean discrete label to vote on,
+    # so use token-overlap similarity between the primary sample and each
+    # additional sample as a proxy for "the model keeps saying the same
+    # thing" rather than confabulating differently each time.
+    primary_tokens = _token_set(primary)
+    overlaps = [_jaccard(primary_tokens, _token_set(s)) for s in samples[1:]]
+    if not overlaps:
+        return None
+    return sum(overlaps) / len(overlaps)
+
+
+def sample_answers(category: str, prompt: str) -> Optional[tuple]:
+    """Draw the deterministic (temp=0) sample plus 2 stochastic ones.
+    Returns (primary, samples) with samples[0] == primary, or None if the
+    model's unavailable or the primary sample fails the basic sanity
+    check. Shared by answer_confident() and calibrate.py so both compute
+    the confidence signal from an identically-gathered set of samples.
     """
     model_key = _CATEGORY_MODEL.get(category)
     if model_key is None:
@@ -263,39 +339,38 @@ def answer_confident(category: str, prompt: str) -> Optional[str]:
     if len(samples) < 2:
         # Couldn't even get a second opinion - not enough signal to trust.
         return None
+    return primary, samples
 
-    if category == "sentiment":
-        labels = [_label_of(category, s) for s in samples]
-        labels = [l for l in labels if l is not None]
-        if len(labels) < 2:
+
+def answer_confident(category: str, prompt: str) -> Optional[str]:
+    """Self-consistency gated version of answer(): the deterministic
+    (temperature=0) sample must also agree with 2 additional stochastic
+    samples before being trusted. The agreement signal is looked up
+    against a calibration curve fitted from real labelled observations
+    (router/calibrate.py) when available for this category, falling back
+    to a conservative fixed threshold otherwise. Disagreement/low
+    calibrated confidence escalates to Fireworks (returns None) rather
+    than risking a locally-generated wrong answer.
+    """
+    sampled = sample_answers(category, prompt)
+    if sampled is None:
+        return None
+    primary, samples = sampled
+
+    signal = confidence_signal(category, primary, samples)
+    if signal is None:
+        return None
+
+    calibration = _load_calibration()
+    curve = calibration.get(category)
+    if curve is not None:
+        if curve.get("force_escalate"):
             return None
-        counts = {}
-        for l in labels:
-            counts[l] = counts.get(l, 0) + 1
-        top_label, top_count = max(counts.items(), key=lambda kv: kv[1])
-        return primary if top_count >= 2 else None
+        p_correct = _calibrated_probability(curve.get("points", []), signal)
+        return primary if p_correct >= _TARGET_RELIABILITY else None
 
-    if category in ("code_debug", "code_gen"):
-        # Syntax validity across independent samples is the agreement
-        # signal for code: if the model can only produce valid syntax
-        # some of the time for this exact prompt, it's shaky on it.
-        from router.solvers import looks_like_python, python_syntax_error
-        valid_count = sum(
-            1 for s in samples
-            if looks_like_python(s) and python_syntax_error(s) is None
-        )
-        if valid_count < 2:
-            return None
-        return primary if (looks_like_python(primary) and python_syntax_error(primary) is None) else None
-
-    # factual / ner / summarization: no clean discrete label to vote on,
-    # so use token-overlap similarity between the primary sample and each
-    # additional sample as a proxy for "the model keeps saying the same
-    # thing" rather than confabulating differently each time.
-    primary_tokens = _token_set(primary)
-    overlaps = [_jaccard(primary_tokens, _token_set(s)) for s in samples[1:]]
-    avg_overlap = sum(overlaps) / len(overlaps)
-    return primary if avg_overlap >= _OVERLAP_THRESHOLD else None
+    threshold = _VOTE_THRESHOLD if category in ("sentiment", "code_debug", "code_gen") else _OVERLAP_THRESHOLD
+    return primary if signal >= threshold else None
 
 
 _MATH_EXTRACT_PROMPT = (

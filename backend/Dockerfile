@@ -15,15 +15,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
     && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir llama-cpp-python
 
-# GGUF weights downloaded at build time (not committed to git - each is
-# ~1GB) and byte-size verified, same as the Track 1 image's Dockerfile.
+# GGUF weights downloaded at build time (not committed to git) and
+# byte-size verified, same as the Track 1 image's Dockerfile.
 RUN mkdir -p models && \
-    curl -L -o models/qwen2.5-1.5b-instruct-q4_k_m.gguf \
-      "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf" && \
-    curl -L -o models/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf \
-      "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf" && \
-    [ "$(stat -c%s models/qwen2.5-1.5b-instruct-q4_k_m.gguf)" = "1117320736" ] && \
-    [ "$(stat -c%s models/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf)" = "1117320768" ]
+    curl -L -o models/qwen3-4b-instruct-2507-q4_k_m.gguf \
+      "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf" && \
+    [ "$(stat -c%s models/qwen3-4b-instruct-2507-q4_k_m.gguf)" = "2497281120" ]
 
 COPY router/ ./router/
 COPY backend/main.py .

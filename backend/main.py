@@ -14,7 +14,7 @@ from pydantic import BaseModel
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from router.classifier import classify
-from router.solvers import try_solve_math, looks_like_python, python_syntax_error
+from router.solvers import try_solve_math, strip_code_fence
 from router.fireworks_client import FireworksClient
 from router import local_llm
 
@@ -46,7 +46,7 @@ class RouteRequest(BaseModel):
 
 class RouteResponse(BaseModel):
     category: str
-    source: str  # "local (deterministic)" | "qwen" | "qwen-coder" | a Fireworks model id | "error" | "n/a"
+    source: str  # "local (deterministic)" | "qwen3" | a Fireworks model id | "error" | "n/a"
     tokens: int
     elapsed: float
     answer: str
@@ -74,8 +74,7 @@ def models():
     return {
         "fireworks_models": fireworks_models,
         "local_models": [
-            {"name": "Qwen2.5-1.5B-Instruct", "categories": ["factual", "sentiment", "ner", "summarization"]},
-            {"name": "Qwen2.5-Coder-1.5B-Instruct", "categories": ["code_debug", "code_gen"]},
+            {"name": "Qwen3-4B-Instruct-2507", "categories": ["factual", "sentiment", "ner", "summarization", "code_debug", "code_gen"]},
         ],
         "has_fireworks_creds": has_creds,
     }
@@ -96,13 +95,11 @@ def route(req: RouteRequest):
         # Word problems deliberately stay on Fireworks - see main.py for why.
 
     if answer is None and category in LOCAL_LLM_CATEGORIES:
-        local_answer = local_llm.answer(category, prompt)
+        local_answer = local_llm.answer_confident(category, prompt)
         if local_answer is not None:
-            if category in ("code_debug", "code_gen") and looks_like_python(local_answer):
-                if python_syntax_error(local_answer) is None:
-                    answer, source = local_answer, "qwen-coder"
-            else:
-                answer, source = local_answer, "qwen"
+            if category in ("code_debug", "code_gen"):
+                local_answer = strip_code_fence(local_answer)
+            answer, source = local_answer, "qwen3"
 
     has_creds = all(os.environ.get(k) for k in ("FIREWORKS_API_KEY", "FIREWORKS_BASE_URL", "ALLOWED_MODELS"))
     if answer is None and has_creds:
