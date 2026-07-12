@@ -6,18 +6,20 @@ routed here has been checked against router/eval_local.py first, and every
 answer still passes a confidence gate (see answer_confident) before being
 trusted over escalating to Fireworks.
 
-One consolidated model (Qwen3-4B-Instruct-2507) covers every locally-
-eligible category - sentiment / NER / factual / summarisation /
-code_debug / code_gen. Earlier versions used two separate 1.5B models
-(general + code-specialized), but Qwen3-4B handles code well enough on
-its own to drop the dedicated coder model, at a similar combined memory
-footprint to a single model rather than two loaded models. Lazy-loaded
-(only loaded if a task in a given run actually needs it), and loading/
-inference failures degrade to None so main.py's Fireworks fallback always
-covers the gap.
+Qwen3-4B-Instruct-2507 covers sentiment / NER / factual / summarisation.
+code_debug / code_gen route to a dedicated coder model instead
+(Qwen2.5-Coder-1.5B-Instruct) - reintroduced after calibration showed
+Qwen3-4B's code_gen accuracy (43%, force-escalated) was surprisingly weak
+for a general-purpose model; a code-specialist model, even much smaller,
+is a better bet for code correctness than a bigger generalist. Both
+models are lazy-loaded (only loaded if a task in a given run actually
+needs them), and loading/inference failures degrade to None so main.py's
+Fireworks fallback always covers the gap.
 """
 import os
 import re
+import subprocess
+import sys
 from typing import Optional
 
 _MODELS_DIR = os.environ.get(
@@ -27,6 +29,7 @@ _MODELS_DIR = os.environ.get(
 
 _MODEL_PATHS = {
     "general": os.environ.get("LOCAL_GENERAL_MODEL_PATH", os.path.join(_MODELS_DIR, "qwen3-4b-instruct-2507-q4_k_m.gguf")),
+    "code": os.environ.get("LOCAL_CODE_MODEL_PATH", os.path.join(_MODELS_DIR, "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf")),
 }
 
 # Same source/size as the Dockerfile's build-time download - used here so
@@ -37,6 +40,10 @@ _MODEL_DOWNLOAD = {
     "general": (
         "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
         2497281120,
+    ),
+    "code": (
+        "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+        1117320768,
     ),
 }
 
@@ -73,8 +80,8 @@ _CATEGORY_MODEL = {
     "ner": "general",
     "factual": "general",
     "summarization": "general",
-    "code_debug": "general",
-    "code_gen": "general",
+    "code_debug": "code",
+    "code_gen": "code",
 }
 
 _llm_cache = {}
@@ -142,6 +149,17 @@ def _get_llm(model_key: str):
         return None
 
 
+# A CoT variant (brief reasoning -> clearly-marked final answer, same
+# shape as fireworks_client._answer_logic) was tried here for factual/
+# code_gen/sentiment, aiming to raise local accuracy enough to escalate
+# less. Cut short based on real evidence: a partial calibration run showed
+# sentiment accuracy *dropping* (58% -> 51.7%) with CoT, matching a
+# competitor's independently-reported finding on their own small local
+# model (65% -> 24% on logic with CoT). Small local models reasoning
+# out loud before answering is a real, repeatable failure mode, not
+# something to assume helps by default - reverted to plain single-shot
+# generation, which is what the current calibration.json was fitted
+# against.
 _SYSTEM_PROMPTS = {
     "sentiment": "Classify sentiment as positive, negative, or neutral, then give a one-clause justification. Be concise.",
     "ner": "Extract named entities (person, organization, location, date) as a compact labelled list. Be concise.",
@@ -165,9 +183,10 @@ _MAX_TOKENS = {
 
 
 def preload() -> None:
-    """Download + load the model up front (used by the webapp so the
-    first user query isn't the one paying for the ~2.5GB download)."""
+    """Download + load both models up front (used by the webapp so the
+    first user query isn't the one paying for the download)."""
     _get_llm("general")
+    _get_llm("code")
 
 
 def available(category: str = "general") -> bool:
@@ -457,6 +476,111 @@ def try_solve_math_word_problem(prompt: str) -> Optional[str]:
         counts[v] = counts.get(v, 0) + 1
     best_value, best_count = max(counts.items(), key=lambda kv: kv[1])
     return best_value if best_count >= 2 else None
+
+
+_MATH_PAL_SYSTEM = (
+    "Write a short Python program that computes the final numeric answer to "
+    "this word problem, using ordinary arithmetic (+ - * / ** parentheses, "
+    "variables) and doing any unit conversions as explicit separate steps. "
+    "End the program with `print(answer)` where `answer` holds the final "
+    "numeric result and nothing else is printed. Output ONLY the code - no "
+    "explanation, no markdown fence."
+)
+
+# Runs untrusted model-generated code in a *separate process* (not exec'd
+# in-process) so a hang or crash can't take down the main pipeline within
+# the 10-minute submission budget, with only `math` pre-imported and no
+# import/file/network builtins available to the executed code.
+_SANDBOX_RUNNER = (
+    "import sys, math, builtins\n"
+    "_safe = {n: getattr(builtins, n) for n in ("
+    "'abs','round','min','max','sum','len','range','int','float','str',"
+    "'bool','list','tuple','dict','set','print','enumerate','zip','sorted',"
+    "'reversed','pow','divmod') if hasattr(builtins, n)}\n"
+    "_g = {'__builtins__': _safe, 'math': math}\n"
+    "try:\n"
+    "    exec(compile(sys.stdin.read(), '<model>', 'exec'), _g, _g)\n"
+    "except Exception as e:\n"
+    "    print('__ERROR__:' + str(e))\n"
+)
+
+
+def _run_math_pal_sandboxed(code: str, timeout: float = 3.0) -> Optional[str]:
+    from router.solvers import strip_code_fence  # local import: avoid a cycle at module load
+
+    code = strip_code_fence(code)
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _SANDBOX_RUNNER],
+            input=code, capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if proc.returncode != 0:
+        return None
+    out = proc.stdout.strip()
+    if not out or "__ERROR__" in out:
+        return None
+    last_line = out.splitlines()[-1].strip()
+    try:
+        float(last_line.replace(",", ""))
+    except ValueError:
+        return None
+    return last_line
+
+
+def try_solve_math_word_problem_pal(prompt: str) -> Optional[str]:
+    """Program-aided alternative to try_solve_math_word_problem: instead of
+    asking the model to extract a single arithmetic expression (which
+    breaks on problems needing an intermediate step, like unit
+    conversions - see the _RATE_CONVERSION_RE comment above), let it write
+    a short program and execute that in a restricted subprocess sandbox -
+    handles multi-step problems the expression-only approach can't, while
+    still never trusting the model's own arithmetic (the sandbox does the
+    actual computation, not the model).
+
+    Self-consistency gated like the rest of this module: only trusted when
+    >=2 of 3 independently-sampled programs agree on the computed value.
+    Kept behind ENABLE_MATH_PAL (main.py), off by default, since an earlier
+    experiment found self-consistency sampling made local math-word-problem
+    solving *less* reliable via the simpler expression-extraction approach -
+    this needs its own validation before being trusted as a default.
+    """
+    llm = _get_llm("general")
+    if llm is None:
+        return None
+
+    values = []
+    for _ in range(3):
+        try:
+            result = llm.create_chat_completion(
+                messages=[
+                    {"role": "system", "content": _MATH_PAL_SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=300,
+                temperature=0.7,
+            )
+            code = result["choices"][0]["message"]["content"].strip()
+        except Exception:
+            continue
+        out = _run_math_pal_sandboxed(code)
+        if out is None:
+            continue
+        try:
+            values.append(round(float(out.replace(",", "")), 6))
+        except ValueError:
+            continue
+
+    if not values:
+        return None
+    counts = {}
+    for v in values:
+        counts[v] = counts.get(v, 0) + 1
+    best_value, best_count = max(counts.items(), key=lambda kv: kv[1])
+    if best_count < 2:
+        return None
+    return str(int(best_value)) if best_value == int(best_value) else str(best_value)
 
 
 def _sane(category: str, text: str) -> bool:

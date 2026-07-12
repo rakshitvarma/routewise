@@ -1,5 +1,8 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import rehypeHighlight from "rehype-highlight";
 import type { HistoryEntry } from "./Playground";
 import { CategoryPill, ModelBadge, Chip } from "./Badge";
 
@@ -41,7 +44,12 @@ function HistoryRow({ entry }: { entry: HistoryEntry }) {
       </button>
       {open && (
         <div className="prose prose-invert prose-sm max-w-none border-t border-neutral-800 px-4 py-3 text-neutral-300">
-          <ReactMarkdown>{entry.answer}</ReactMarkdown>
+          <ReactMarkdown
+            remarkPlugins={[remarkMath]}
+            rehypePlugins={[rehypeKatex, rehypeHighlight]}
+          >
+            {entry.answer}
+          </ReactMarkdown>
         </div>
       )}
     </div>

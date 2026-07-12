@@ -1,5 +1,7 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
+@import "katex/dist/katex.min.css";
+@import "highlight.js/styles/atom-one-dark.css";
 
 @theme {
   --color-bg: #0a0a0f;

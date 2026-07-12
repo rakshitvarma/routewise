@@ -1,5 +1,8 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import rehypeHighlight from "rehype-highlight";
 import { routeTask, type RouteResponse } from "../api";
 import { CATEGORY_META, FairwindLogo } from "../assets";
 import { EXAMPLES } from "../examples";
@@ -104,7 +107,12 @@ export function Playground({
             </div>
           </div>
           <div className="prose prose-invert prose-sm mt-4 max-w-none border-t border-neutral-800 pt-4 text-neutral-200">
-            <ReactMarkdown>{result.answer}</ReactMarkdown>
+            <ReactMarkdown
+              remarkPlugins={[remarkMath]}
+              rehypePlugins={[rehypeKatex, rehypeHighlight]}
+            >
+              {result.answer}
+            </ReactMarkdown>
           </div>
         </div>
       )}

@@ -17,12 +17,24 @@ import time
 from collections import defaultdict
 
 from router.classifier import classify
-from router.solvers import try_solve_math, looks_like_python, python_syntax_error, strip_code_fence
+from router.solvers import (
+    try_solve_math, try_solve_ner_spacy, try_solve_logic_row, looks_like_python,
+    python_syntax_error, strip_code_fence,
+)
 from router.fireworks_client import FireworksClient
 from router import local_llm
 
 INPUT_PATH = os.environ.get("TASKS_INPUT_PATH", "/input/tasks.json")
 OUTPUT_PATH = os.environ.get("TASKS_OUTPUT_PATH", "/output/results.json")
+
+# Both were validated against real examples before deciding a default:
+# spaCy NER scored 9/15 (60%) fully-matched entities - worse than the
+# existing calibrated LLM+Fireworks pipeline (97%), so it stays off.
+# PAL math scored 3/3 (100%) on percentage/rate/fraction word problems -
+# on by default, still gated behind its own self-consistency agreement
+# check (>=2/3 samples) same as everything else in this module.
+_ENABLE_SPACY_NER = os.environ.get("ENABLE_SPACY_NER", "false").lower() == "true"
+_ENABLE_MATH_PAL = os.environ.get("ENABLE_MATH_PAL", "true").lower() == "true"
 
 # Categories the bundled local models are allowed to attempt - each answer
 # still has to clear the self-consistency confidence gate in
@@ -69,17 +81,45 @@ def main():
                     answers[task_id] = local_answer
                     print(f"[timing] t={time.time()-started:.1f}s {task_id} ({category}) solved deterministically", file=sys.stderr)
                     continue
-                # Word problems deliberately stay on Fireworks, not
-                # local_llm.try_solve_math_word_problem(): that path exists
-                # and works on the handful of cases tested, but a handful
-                # of invented test cases doesn't bound the true failure
-                # rate against genuinely randomized prompts, and an
-                # attempt to make it safer via self-consistency
-                # empirically made it *less* reliable (temperature
-                # sampling turned a correct answer wrong). Fireworks has
-                # been 100% correct on every math word problem across
-                # every test run - real evidence beats a handful of ad
-                # hoc samples when a wrong answer risks the accuracy gate.
+                # Word problems deliberately stay on Fireworks by default,
+                # not local_llm.try_solve_math_word_problem(): that path
+                # exists and works on the handful of cases tested, but a
+                # handful of invented test cases doesn't bound the true
+                # failure rate against genuinely randomized prompts, and an
+                # attempt to make it safer via self-consistency empirically
+                # made it *less* reliable (temperature sampling turned a
+                # correct answer wrong). Fireworks has been 100% correct on
+                # every math word problem across every test run - real
+                # evidence beats a handful of ad hoc samples when a wrong
+                # answer risks the accuracy gate. ENABLE_MATH_PAL opts into
+                # local_llm.try_solve_math_word_problem_pal() instead (a
+                # program-aided, sandboxed alternative) once validated.
+                if _ENABLE_MATH_PAL:
+                    pal_started = time.time()
+                    pal_answer = local_llm.try_solve_math_word_problem_pal(prompt)
+                    pal_elapsed = time.time() - pal_started
+                    if pal_answer is not None:
+                        answers[task_id] = pal_answer
+                        print(f"[timing] t={time.time()-started:.1f}s {task_id} ({category}) solved via local PAL in {pal_elapsed:.1f}s", file=sys.stderr)
+                        continue
+                    print(f"[timing] t={time.time()-started:.1f}s {task_id} ({category}) PAL not confident, in {pal_elapsed:.1f}s, falling to Fireworks", file=sys.stderr)
+
+            if category == "logic":
+                logic_answer = try_solve_logic_row(prompt)
+                if logic_answer is not None:
+                    answers[task_id] = logic_answer
+                    print(f"[timing] t={time.time()-started:.1f}s {task_id} (logic) solved deterministically (row puzzle)", file=sys.stderr)
+                    continue
+                # Anything else (box-labeling, dual-attribute grids, etc.)
+                # falls through to Fireworks's self-consistency logic path,
+                # same as before this solver existed.
+
+            if category == "ner" and _ENABLE_SPACY_NER:
+                ner_answer = try_solve_ner_spacy(prompt)
+                if ner_answer is not None:
+                    answers[task_id] = ner_answer
+                    print(f"[timing] t={time.time()-started:.1f}s {task_id} (ner) solved via spaCy", file=sys.stderr)
+                    continue
 
             if category in LOCAL_LLM_CATEGORIES:
                 local_started = time.time()

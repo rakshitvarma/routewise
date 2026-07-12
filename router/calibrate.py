@@ -132,6 +132,17 @@ def main():
         + [("summarization", e, "exact") for e in calibration_data.SUMMARIZATION]
     )
 
+    # Re-running the full 191-example dataset costs 60-90 minutes; when only
+    # a handful of categories changed (e.g. a new CoT prompt for
+    # factual/code_gen/sentiment), CALIBRATE_CATEGORIES lets us re-fit just
+    # those, merging into the existing calibration.json instead of
+    # recomputing (and re-paying for) every category from scratch.
+    only = os.environ.get("CALIBRATE_CATEGORIES")
+    if only:
+        wanted = {c.strip() for c in only.split(",") if c.strip()}
+        dataset = [d for d in dataset if d[0] in wanted]
+        print(f"[calibrate] filtered to categories: {sorted(wanted)}", file=sys.stderr)
+
     observations = {}  # category -> [(signal, is_correct), ...]
     for category, example, check_kind in dataset:
         prompt = example["prompt"]
@@ -176,9 +187,16 @@ def main():
         calibration[category] = {"force_escalate": False, "n": n, "accuracy": accuracy, "points": points}
 
     out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "calibration.json")
+    existing = {}
+    try:
+        with open(out_path) as f:
+            existing = json.load(f)
+    except Exception:
+        pass
+    existing.update(calibration)  # only overwrite categories actually re-run
     with open(out_path, "w") as f:
-        json.dump(calibration, f, indent=2)
-    print(f"[calibrate] wrote {out_path}", file=sys.stderr)
+        json.dump(existing, f, indent=2)
+    print(f"[calibrate] wrote {out_path} (categories updated: {sorted(calibration)})", file=sys.stderr)
 
 
 if __name__ == "__main__":

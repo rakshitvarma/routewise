@@ -30,8 +30,37 @@ _ENABLE_GEMMA_BONUS = os.environ.get("ENABLE_GEMMA_BONUS", "false").lower() == "
 # options to run once deployed, so prefer it over the dense 31b variants.
 _PREFERRED_GEMMA_HINT = "a4b"
 
+# A plain factual/trivia prompt and an open-ended "derive/prove/explain in
+# detail" request both classify as "factual" (correctly - there's no
+# separate official category for them), but forcing the same terse
+# "1-2 sentences" instruction onto both means derivation-style requests get
+# cut short even when the token budget would allow more. This regex lets
+# just those requests use a richer prompt/budget without touching the
+# terse behavior tuned (and calibration-tested) for ordinary factual QA.
+_DETAILED_RE = re.compile(
+    r"\bderiv(e|ation)\b|\bprove\b|\bproof\b|\bstep[- ]by[- ]step\b|"
+    r"\bexplain in detail\b|\bwalk through\b|\bshow your work\b|\bin depth\b",
+    re.I,
+)
+
+
+def _prompt_key(category: str, prompt: str) -> str:
+    """Category key used to look up _SYSTEM_PROMPTS/_MAX_TOKENS - same as
+    `category` for everything except a detailed-explanation-style factual
+    request, which gets its own richer entry."""
+    if category == "factual" and _DETAILED_RE.search(prompt):
+        return "factual_detailed"
+    return category
+
+
 _SYSTEM_PROMPTS = {
     "factual": "Answer each question in 1-2 short sentences. No preamble, no filler.",
+    "factual_detailed": (
+        "Answer thoroughly with clear step-by-step reasoning or derivation as "
+        "requested. Use LaTeX ($...$ or $$...$$) for math notation and fenced "
+        "code blocks for code. No filler preamble, but do not artificially "
+        "truncate the explanation."
+    ),
     "sentiment": "Classify sentiment (positive/negative/neutral) and give a one-clause justification.",
     "summarization": "Summarise each passage to the exact length/format constraint given. No preamble.",
     "ner": "Extract named entities (person, org, location, date) as a compact labelled list.",
@@ -44,6 +73,7 @@ _SYSTEM_PROMPTS = {
 
 _MAX_TOKENS = {
     "factual": 130,
+    "factual_detailed": 450,
     "sentiment": 40,
     "summarization": 100,
     "ner": 80,
@@ -174,9 +204,10 @@ class FireworksClient:
             # No JSON wrapper needed (and no ambiguous placeholder key to
             # confuse the model with) when there's only one task to answer.
             task_id, prompt = items[0]
+            key = _prompt_key(category, prompt)
             content = self._complete(
-                model, _SYSTEM_PROMPTS[category], prompt,
-                _MAX_TOKENS[category], json_mode=False,
+                model, _SYSTEM_PROMPTS[key], prompt,
+                _MAX_TOKENS[key], json_mode=False,
             )
             return {task_id: content.strip()}
 
@@ -237,9 +268,10 @@ class FireworksClient:
             model = group_key.split("::", 1)[0]
             if len(entries) == 1:
                 task_id, category, prompt = entries[0]
+                key = _prompt_key(category, prompt)
                 content = self._complete(
-                    model, _SYSTEM_PROMPTS[category], prompt,
-                    _MAX_TOKENS[category], json_mode=False,
+                    model, _SYSTEM_PROMPTS[key], prompt,
+                    _MAX_TOKENS[key], json_mode=False,
                 )
                 return {task_id: content.strip()}
 
@@ -251,8 +283,9 @@ class FireworksClient:
             ]
             max_tokens = 20 * len(entries)
             for task_id, category, prompt in entries:
-                lines.append(f'"{task_id}" [{_SYSTEM_PROMPTS[category]}]: {prompt}')
-                max_tokens += _MAX_TOKENS[category]
+                key = _prompt_key(category, prompt)
+                lines.append(f'"{task_id}" [{_SYSTEM_PROMPTS[key]}]: {prompt}')
+                max_tokens += _MAX_TOKENS[key]
 
             content = self._complete(
                 model,
@@ -270,9 +303,10 @@ class FireworksClient:
                     # Missing key or degenerate batch: one corrective
                     # single-task call rather than submitting an empty/wrong
                     # answer that's a guaranteed miss on the accuracy gate.
+                    key = _prompt_key(category, prompt)
                     answer = self._complete(
-                        model, _SYSTEM_PROMPTS[category], prompt,
-                        _MAX_TOKENS[category], json_mode=False,
+                        model, _SYSTEM_PROMPTS[key], prompt,
+                        _MAX_TOKENS[key], json_mode=False,
                     ).strip()
                 group_results[task_id] = answer
             return group_results
